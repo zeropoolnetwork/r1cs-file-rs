@@ -17,6 +17,7 @@ const VERSION: &[u8; 4] = &[1, 0, 0, 0];
 
 pub type Error<'a> = NomErr<nom::error::Error<&'a [u8]>>;
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct R1csFile {
     pub header: Header,
     pub constraints: Constraints,
@@ -36,6 +37,7 @@ impl R1csFile {
 
         let _ = buf.write_all(MAGIC);
         let _ = buf.write_all(VERSION);
+        let _ = buf.write_u32::<LittleEndian>(3); // number of sections
 
         self.header.serialize(&mut buf);
         self.constraints.serialize(&mut buf);
@@ -67,6 +69,7 @@ impl R1csFile {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Header {
     pub field_size: u32,
     pub prime: FieldElement,
@@ -109,7 +112,7 @@ impl Header {
     fn serialize(&self, buf: &mut Vec<u8>) {
         let header = SectionHeader {
             ty: SectionType::Header,
-            size: 6 * 4 + self.field_size as u64,
+            size: 6 * 4 + 8 + self.field_size as u64,
         };
 
         header.serialize(buf);
@@ -118,12 +121,14 @@ impl Header {
         self.prime.serialize(buf);
         let _ = buf.write_u32::<LittleEndian>(self.n_wires);
         let _ = buf.write_u32::<LittleEndian>(self.n_pub_out);
+        let _ = buf.write_u32::<LittleEndian>(self.n_pub_in);
         let _ = buf.write_u32::<LittleEndian>(self.n_prvt_in);
         let _ = buf.write_u64::<LittleEndian>(self.n_labels);
         let _ = buf.write_u32::<LittleEndian>(self.n_constraints);
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Constraints {
     pub constraints: Vec<Constraint>,
 }
@@ -157,6 +162,7 @@ impl Constraints {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Constraint {
     pub combinations: [BTreeMap<u32, FieldElement>; 3],
 }
@@ -213,6 +219,7 @@ impl Constraint {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct WireMap {
     pub label_ids: Vec<u64>,
 }
@@ -265,7 +272,7 @@ impl SectionHeader {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u32)]
 enum SectionType {
     Header = 1,
@@ -289,6 +296,7 @@ impl SectionType {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct FieldElement(Vec<u8>);
 
 impl FieldElement {
@@ -332,5 +340,15 @@ mod tests {
         let file = R1csFile::parse_bytes(&data).unwrap();
 
         assert!(true);
+    }
+
+    #[test]
+    fn test_serialize() {
+        let data = std::fs::read("test_circuit.r1cs").unwrap();
+        let parsed_file = R1csFile::parse_bytes(&data).unwrap();
+        let serialized_file = parsed_file.serialize();
+
+        assert_eq!(data.len(), serialized_file.len());
+        assert_eq!(data, serialized_file);
     }
 }
