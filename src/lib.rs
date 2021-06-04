@@ -71,7 +71,7 @@ impl R1csFile {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Header {
-    pub field_size: u32,
+    pub field_size: u32, // TODO: Make field a type parameter
     pub prime: FieldElement,
     pub n_wires: u32,
     pub n_pub_out: u32,
@@ -164,7 +164,7 @@ impl Constraints {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Constraint {
-    pub combinations: [BTreeMap<u32, FieldElement>; 3],
+    pub combinations: [Vec<(FieldElement, u32)>; 3],
 }
 
 impl Constraint {
@@ -181,27 +181,27 @@ impl Constraint {
         ))
     }
 
-    fn parse_combination(i: &[u8], fs: usize) -> IResult<&[u8], BTreeMap<u32, FieldElement>> {
+    fn parse_combination(i: &[u8], fs: usize) -> IResult<&[u8], Vec<(FieldElement, u32)>> {
         let (i, n) = le_u32(i)?;
-        let mut map = BTreeMap::new();
+        let mut factors = Vec::new();
 
         let mut i = i;
         for _ in 0..n {
             let (input, index) = le_u32(i)?;
             let (input, factor) = FieldElement::parse(input, fs)?;
-            map.insert(index, factor);
+            factors.push((factor, index));
 
             i = input;
         }
 
-        Ok((i, map))
+        Ok((i, factors))
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
         for comb in &self.combinations {
             let _ = buf.write_u32::<LittleEndian>(comb.len() as u32);
 
-            for (index, factor) in comb.iter() {
+            for (factor, index) in comb {
                 let _ = buf.write_u32::<LittleEndian>(*index);
                 factor.serialize(buf);
             }
@@ -209,10 +209,11 @@ impl Constraint {
     }
 
     fn size(&self) -> usize {
+        // TODO: Optimize, there is no need to traverse everything
         let combs: usize = self
             .combinations
             .iter()
-            .map(|c| c.values().map(|f| f.as_slice().len()).sum::<usize>() + c.len() * 4)
+            .map(|c| c.iter().map(|(f, _)| f.as_slice().len()).sum::<usize>() + c.len() * 4)
             .sum();
 
         combs + self.combinations.len() * 4
@@ -338,8 +339,6 @@ mod tests {
     fn test_parse() {
         let data = std::fs::read("test_circuit.r1cs").unwrap();
         let file = R1csFile::parse_bytes(&data).unwrap();
-
-        assert!(true);
     }
 
     #[test]
@@ -347,6 +346,8 @@ mod tests {
         let data = std::fs::read("test_circuit.r1cs").unwrap();
         let parsed_file = R1csFile::parse_bytes(&data).unwrap();
         let serialized_file = parsed_file.serialize();
+
+        // std::fs::write("test_circuit_new.r1cs", &serialized_file).unwrap();
 
         assert_eq!(data.len(), serialized_file.len());
         assert_eq!(data, serialized_file);
