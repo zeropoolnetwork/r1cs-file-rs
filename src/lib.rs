@@ -54,7 +54,7 @@ impl R1csFile {
         let (i, header) = Header::parse(i)?;
         let (i, constraints) =
             Constraints::parse(i, header.n_constraints as usize, header.field_size as usize)?;
-        let (i, map) = WireMap::parse(i, header.n_labels as usize)?;
+        let (i, map) = WireMap::parse(i)?;
 
         Ok((
             i,
@@ -72,8 +72,9 @@ pub struct Header {
     pub prime: FieldElement,
     pub n_wires: u32,
     pub n_pub_out: u32,
+    pub n_pub_in: u32,
     pub n_prvt_in: u32,
-    pub n_labels: u32,
+    pub n_labels: u64,
     pub n_constraints: u32,
 }
 
@@ -85,8 +86,9 @@ impl Header {
         let (i, prime) = FieldElement::parse(i, field_size as usize)?;
         let (i, n_wires) = le_u32(i)?;
         let (i, n_pub_out) = le_u32(i)?;
+        let (i, n_pub_in) = le_u32(i)?;
         let (i, n_prvt_in) = le_u32(i)?;
-        let (i, n_labels) = le_u32(i)?;
+        let (i, n_labels) = le_u64(i)?;
         let (i, n_constraints) = le_u32(i)?;
 
         Ok((
@@ -96,6 +98,7 @@ impl Header {
                 prime,
                 n_wires,
                 n_pub_out,
+                n_pub_in,
                 n_prvt_in,
                 n_labels,
                 n_constraints,
@@ -116,7 +119,7 @@ impl Header {
         let _ = buf.write_u32::<LittleEndian>(self.n_wires);
         let _ = buf.write_u32::<LittleEndian>(self.n_pub_out);
         let _ = buf.write_u32::<LittleEndian>(self.n_prvt_in);
-        let _ = buf.write_u32::<LittleEndian>(self.n_labels);
+        let _ = buf.write_u64::<LittleEndian>(self.n_labels);
         let _ = buf.write_u32::<LittleEndian>(self.n_constraints);
     }
 }
@@ -215,14 +218,22 @@ pub struct WireMap {
 }
 
 impl WireMap {
-    fn parse(i: &[u8], num: usize) -> IResult<&[u8], Self> {
-        let (i, _section) = SectionHeader::parse(i)?;
-        let (i, label_ids) = count(le_u64, num)(i)?;
+    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
+        let (i, section) = SectionHeader::parse(i)?;
+        let num_labels = section.size / 8;
+        let (i, label_ids) = count(le_u64, num_labels as usize)(i)?;
 
         Ok((i, WireMap { label_ids }))
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
+        let header = SectionHeader {
+            ty: SectionType::Wire2LabelIdMap,
+            size: self.label_ids.len() as u64 * 8,
+        };
+
+        header.serialize(buf);
+
         for label_id in &self.label_ids {
             let _ = buf.write_u64::<LittleEndian>(*label_id);
         }
@@ -257,9 +268,9 @@ impl SectionHeader {
 #[derive(PartialEq, Eq, Clone, Copy)]
 #[repr(u32)]
 enum SectionType {
-    Header = 0,
-    Constraint = 1,
-    Wire2LabelIdMap = 2,
+    Header = 1,
+    Constraint = 2,
+    Wire2LabelIdMap = 3,
     Unknown = u32::MAX,
 }
 
@@ -268,9 +279,9 @@ impl SectionType {
         let (i, num) = le_u32(i)?;
 
         let ty = match num {
-            0 => SectionType::Header,
-            1 => SectionType::Constraint,
-            2 => SectionType::Wire2LabelIdMap,
+            1 => SectionType::Header,
+            2 => SectionType::Constraint,
+            3 => SectionType::Wire2LabelIdMap,
             _ => SectionType::Unknown,
         };
 
