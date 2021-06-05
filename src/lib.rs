@@ -2,15 +2,12 @@
 //!
 //! Format specification: https://github.com/iden3/r1csfile/blob/master/doc/r1cs_bin_format.md
 
-use std::collections::BTreeMap;
 use std::io::Write;
-use std::iter::FromIterator;
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use nom::bytes::complete::{tag, take};
 use nom::multi::{count, fill};
 use nom::{number::complete::*, Err as NomErr, IResult};
-use std::ops::Deref;
 
 const MAGIC: &[u8; 4] = b"r1cs";
 const VERSION: &[u8; 4] = &[1, 0, 0, 0];
@@ -18,13 +15,13 @@ const VERSION: &[u8; 4] = &[1, 0, 0, 0];
 pub type Error<'a> = NomErr<nom::error::Error<&'a [u8]>>;
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct R1csFile {
-    pub header: Header,
-    pub constraints: Constraints,
+pub struct R1csFile<const FS: usize> {
+    pub header: Header<FS>,
+    pub constraints: Constraints<FS>,
     pub map: WireMap,
 }
 
-impl R1csFile {
+impl<const FS: usize> R1csFile<FS> {
     pub fn parse_bytes(input: &[u8]) -> Result<Self, Error> {
         match Self::parse(input) {
             IResult::Ok((_, res)) => Ok(res),
@@ -54,8 +51,7 @@ impl R1csFile {
         let (i, _num_sections) = le_u32(i)?;
 
         let (i, header) = Header::parse(i)?;
-        let (i, constraints) =
-            Constraints::parse(i, header.n_constraints as usize, header.field_size as usize)?;
+        let (i, constraints) = Constraints::parse(i, header.n_constraints as usize)?;
         let (i, map) = WireMap::parse(i)?;
 
         Ok((
@@ -70,9 +66,8 @@ impl R1csFile {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Header {
-    pub field_size: u32, // TODO: Make field a type parameter
-    pub prime: FieldElement,
+pub struct Header<const FS: usize> {
+    pub prime: FieldElement<FS>,
     pub n_wires: u32,
     pub n_pub_out: u32,
     pub n_pub_in: u32,
@@ -81,12 +76,12 @@ pub struct Header {
     pub n_constraints: u32,
 }
 
-impl Header {
+impl<const FS: usize> Header<FS> {
     fn parse(i: &[u8]) -> IResult<&[u8], Self> {
         let (i, _section) = SectionHeader::parse(i)?;
 
-        let (i, field_size) = le_u32(i)?;
-        let (i, prime) = FieldElement::parse(i, field_size as usize)?;
+        let (i, _field_size) = tag((FS as u32).to_le_bytes())(i)?;
+        let (i, prime) = FieldElement::parse(i)?;
         let (i, n_wires) = le_u32(i)?;
         let (i, n_pub_out) = le_u32(i)?;
         let (i, n_pub_in) = le_u32(i)?;
@@ -97,7 +92,6 @@ impl Header {
         Ok((
             i,
             Header {
-                field_size,
                 prime,
                 n_wires,
                 n_pub_out,
@@ -112,12 +106,12 @@ impl Header {
     fn serialize(&self, buf: &mut Vec<u8>) {
         let header = SectionHeader {
             ty: SectionType::Header,
-            size: 6 * 4 + 8 + self.field_size as u64,
+            size: 6 * 4 + 8 + FS as u64,
         };
 
         header.serialize(buf);
 
-        let _ = buf.write_u32::<LittleEndian>(self.field_size);
+        let _ = buf.write_u32::<LittleEndian>(FS as u32);
         self.prime.serialize(buf);
         let _ = buf.write_u32::<LittleEndian>(self.n_wires);
         let _ = buf.write_u32::<LittleEndian>(self.n_pub_out);
@@ -129,18 +123,19 @@ impl Header {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Constraints {
-    pub constraints: Vec<Constraint>,
+pub struct Constraints<const FS: usize> {
+    pub constraints: Vec<Constraint<FS>>,
 }
 
-impl Constraints {
-    fn parse(i: &[u8], n_constraints: usize, fs: usize) -> IResult<&[u8], Self> {
+impl<const FS: usize> Constraints<FS> {
+    fn parse(i: &[u8], n_constraints: usize) -> IResult<&[u8], Self> {
         let (i, _section) = SectionHeader::parse(i)?;
-        let mut constraints = Vec::with_capacity(std::mem::size_of::<Constraint>() * n_constraints);
+        let mut constraints =
+            Vec::with_capacity(std::mem::size_of::<Constraint<FS>>() * n_constraints);
 
         let mut i = i;
         for _ in 0..n_constraints {
-            let (input, c) = Constraint::parse(i, fs)?;
+            let (input, c) = Constraint::parse(i)?;
             constraints.push(c);
             i = input;
         }
@@ -163,15 +158,15 @@ impl Constraints {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Constraint {
-    pub combinations: [Vec<(FieldElement, u32)>; 3],
+pub struct Constraint<const FS: usize> {
+    pub combinations: [Vec<(FieldElement<FS>, u32)>; 3],
 }
 
-impl Constraint {
-    fn parse(i: &[u8], fs: usize) -> IResult<&[u8], Self> {
-        let (i, a) = Self::parse_combination(i, fs)?;
-        let (i, b) = Self::parse_combination(i, fs)?;
-        let (i, c) = Self::parse_combination(i, fs)?;
+impl<const FS: usize> Constraint<FS> {
+    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
+        let (i, a) = Self::parse_combination(i)?;
+        let (i, b) = Self::parse_combination(i)?;
+        let (i, c) = Self::parse_combination(i)?;
 
         Ok((
             i,
@@ -181,14 +176,14 @@ impl Constraint {
         ))
     }
 
-    fn parse_combination(i: &[u8], fs: usize) -> IResult<&[u8], Vec<(FieldElement, u32)>> {
+    fn parse_combination(i: &[u8]) -> IResult<&[u8], Vec<(FieldElement<FS>, u32)>> {
         let (i, n) = le_u32(i)?;
         let mut factors = Vec::new();
 
         let mut i = i;
         for _ in 0..n {
             let (input, index) = le_u32(i)?;
-            let (input, factor) = FieldElement::parse(input, fs)?;
+            let (input, factor) = FieldElement::parse(input)?;
             factors.push((factor, index));
 
             i = input;
@@ -213,7 +208,7 @@ impl Constraint {
         let combs: usize = self
             .combinations
             .iter()
-            .map(|c| c.iter().map(|(f, _)| f.as_slice().len()).sum::<usize>() + c.len() * 4)
+            .map(|c| c.iter().map(|(f, _)| f.len()).sum::<usize>() + c.len() * 4)
             .sum();
 
         combs + self.combinations.len() * 4
@@ -298,33 +293,33 @@ impl SectionType {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct FieldElement(Vec<u8>);
+pub struct FieldElement<const FS: usize>([u8; FS]);
 
-impl FieldElement {
-    pub fn as_slice(&self) -> &[u8] {
-        &self.0
+impl<const FS: usize> FieldElement<FS> {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0[..]
     }
 
-    fn parse(i: &[u8], size: usize) -> IResult<&[u8], Self> {
-        let mut buf = vec![0; size];
+    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
+        let mut buf = [0; FS];
         let (i, _) = fill(u8, &mut buf)(i)?;
 
         Ok((i, FieldElement(buf)))
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
-        let _ = buf.write_all(&self.0);
+        let _ = buf.write_all(&self.0[..]);
     }
 }
 
-impl FromIterator<u8> for FieldElement {
-    fn from_iter<T: IntoIterator<Item = u8>>(iter: T) -> Self {
-        FieldElement(iter.into_iter().collect())
+impl<const FS: usize> From<[u8; FS]> for FieldElement<FS> {
+    fn from(array: [u8; FS]) -> Self {
+        FieldElement(array)
     }
 }
 
-impl Deref for FieldElement {
-    type Target = [u8];
+impl<const FS: usize> std::ops::Deref for FieldElement<FS> {
+    type Target = [u8; FS];
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -338,16 +333,16 @@ mod tests {
     #[test]
     fn test_parse() {
         let data = std::fs::read("test_circuit.r1cs").unwrap();
-        let file = R1csFile::parse_bytes(&data).unwrap();
+        let file = R1csFile::<32>::parse_bytes(&data).unwrap();
     }
 
     #[test]
     fn test_serialize() {
         let data = std::fs::read("test_circuit.r1cs").unwrap();
-        let parsed_file = R1csFile::parse_bytes(&data).unwrap();
+        let parsed_file = R1csFile::<32>::parse_bytes(&data).unwrap();
         let serialized_file = parsed_file.serialize();
 
-        // std::fs::write("test_circuit_new.r1cs", &serialized_file).unwrap();
+        // std::fs::write("simple_circuit_new.r1cs", &serialized_file).unwrap();
 
         assert_eq!(data.len(), serialized_file.len());
         assert_eq!(data, serialized_file);
