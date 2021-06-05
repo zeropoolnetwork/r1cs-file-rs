@@ -123,9 +123,7 @@ impl<const FS: usize> Header<FS> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Constraints<const FS: usize> {
-    pub constraints: Vec<Constraint<FS>>,
-}
+pub struct Constraints<const FS: usize>(pub Vec<Constraint<FS>>);
 
 impl<const FS: usize> Constraints<FS> {
     fn parse(i: &[u8], n_constraints: usize) -> IResult<&[u8], Self> {
@@ -140,18 +138,18 @@ impl<const FS: usize> Constraints<FS> {
             i = input;
         }
 
-        Ok((i, Constraints { constraints }))
+        Ok((i, Constraints(constraints)))
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
         let header = SectionHeader {
             ty: SectionType::Constraint,
-            size: self.constraints.iter().map(|c| c.size()).sum::<usize>() as u64,
+            size: self.0.iter().map(|c| c.size()).sum::<usize>() as u64,
         };
 
         header.serialize(buf);
 
-        for c in &self.constraints {
+        for c in &self.0 {
             c.serialize(buf);
         }
     }
@@ -216,9 +214,7 @@ impl<const FS: usize> Constraint<FS> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct WireMap {
-    pub label_ids: Vec<u64>,
-}
+pub struct WireMap(pub Vec<u64>);
 
 impl WireMap {
     fn parse(i: &[u8]) -> IResult<&[u8], Self> {
@@ -226,18 +222,18 @@ impl WireMap {
         let num_labels = section.size / 8;
         let (i, label_ids) = count(le_u64, num_labels as usize)(i)?;
 
-        Ok((i, WireMap { label_ids }))
+        Ok((i, WireMap(label_ids)))
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
         let header = SectionHeader {
             ty: SectionType::Wire2LabelIdMap,
-            size: self.label_ids.len() as u64 * 8,
+            size: self.0.len() as u64 * 8,
         };
 
         header.serialize(buf);
 
-        for label_id in &self.label_ids {
+        for label_id in &self.0 {
             let _ = buf.write_u64::<LittleEndian>(*label_id);
         }
     }
@@ -329,16 +325,52 @@ impl<const FS: usize> std::ops::Deref for FieldElement<FS> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hex_literal::hex;
 
     #[test]
     fn test_parse() {
-        let data = std::fs::read("test_circuit.r1cs").unwrap();
+        let data = std::fs::read("tests/simple_circuit.r1cs").unwrap();
         let file = R1csFile::<32>::parse_bytes(&data).unwrap();
+
+        // Thanks to https://github.com/poma/zkutil/blob/5d789ab3757dcd79eff244ca4998d7ab91683b40/src/r1cs_reader.rs#L188
+        assert_eq!(
+            file.header.prime,
+            FieldElement::from(hex!(
+                "010000f093f5e1439170b97948e833285d588181b64550b829a031e1724e6430"
+            ))
+        );
+        assert_eq!(file.header.n_wires, 7);
+        assert_eq!(file.header.n_pub_out, 1);
+        assert_eq!(file.header.n_pub_in, 2);
+        assert_eq!(file.header.n_prvt_in, 3);
+        assert_eq!(file.header.n_labels, 0x03e8);
+        assert_eq!(file.header.n_constraints, 3);
+
+        assert_eq!(file.constraints.0.len(), 3);
+        assert_eq!(file.constraints.0[0].combinations[0].len(), 2);
+        assert_eq!(file.constraints.0[0].combinations[0][0].1, 5);
+        assert_eq!(
+            file.constraints.0[0].combinations[0][0].0,
+            FieldElement::from(hex!(
+                "0300000000000000000000000000000000000000000000000000000000000000"
+            )),
+        );
+        assert_eq!(file.constraints.0[2].combinations[1][0].1, 0);
+        assert_eq!(
+            file.constraints.0[2].combinations[1][0].0,
+            FieldElement::from(hex!(
+                "0600000000000000000000000000000000000000000000000000000000000000"
+            )),
+        );
+        assert_eq!(file.constraints.0[1].combinations[2].len(), 0);
+
+        assert_eq!(file.map.0.len(), 7);
+        assert_eq!(file.map.0[1], 3);
     }
 
     #[test]
     fn test_serialize() {
-        let data = std::fs::read("test_circuit.r1cs").unwrap();
+        let data = std::fs::read("tests/test_circuit.r1cs").unwrap();
         let parsed_file = R1csFile::<32>::parse_bytes(&data).unwrap();
         let serialized_file = parsed_file.serialize();
 

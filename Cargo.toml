@@ -8,3 +8,6 @@ edition = "2018"
 [dependencies]
 nom = "6.1.2"
 byteorder = "1.4.2"
+
+[dev-dependencies]
+hex-literal = "0.3.1"
