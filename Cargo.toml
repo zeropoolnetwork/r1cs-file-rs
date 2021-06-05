@@ -2,6 +2,11 @@
 name = "r1cs-file"
 version = "0.1.0"
 edition = "2018"
+description = "R1CS binary file format parser/serializer "
+authors = ["Dmitry Vdovin <voidxnull@gmail.com>"]
+homepage = "https://github.com/zeropoolnetwork/r1cs-file-rs"
+repository = "https://github.com/zeropoolnetwork/r1cs-file-rs"
+license = "MIT OR Apache-2.0"
 exclude = [
     "tests/*",
 ]
