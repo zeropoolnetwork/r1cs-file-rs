@@ -2,17 +2,12 @@
 //!
 //! Format specification: https://github.com/iden3/r1csfile/blob/master/doc/r1cs_bin_format.md
 
-use std::io::Write;
+use std::io::{Error, ErrorKind, Read, Result, Write};
 
-use byteorder::{LittleEndian, WriteBytesExt};
-use nom::bytes::complete::{tag, take};
-use nom::multi::{count, fill};
-use nom::{number::complete::*, Err as NomErr, IResult};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 const MAGIC: &[u8; 4] = b"r1cs";
-const VERSION: &[u8; 4] = &[1, 0, 0, 0];
-
-pub type Error<'a> = NomErr<nom::error::Error<&'a [u8]>>;
+const VERSION: u32 = 1;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct R1csFile<const FS: usize> {
@@ -22,18 +17,11 @@ pub struct R1csFile<const FS: usize> {
 }
 
 impl<const FS: usize> R1csFile<FS> {
-    pub fn parse_bytes(input: &[u8]) -> Result<Self, Error> {
-        match Self::parse(input) {
-            IResult::Ok((_, res)) => Ok(res),
-            IResult::Err(err) => Err(err),
-        }
-    }
-
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new(); // TODO: Preallocate
 
         let _ = buf.write_all(MAGIC);
-        let _ = buf.write_all(VERSION);
+        let _ = buf.write_u32::<LittleEndian>(VERSION);
         let _ = buf.write_u32::<LittleEndian>(3); // number of sections
 
         self.header.serialize(&mut buf);
@@ -43,25 +31,30 @@ impl<const FS: usize> R1csFile<FS> {
         buf
     }
 
-    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
-        let (i, _magic) = tag(MAGIC)(i)?;
-        let (i, _version) = tag(VERSION)(i)?;
+    pub fn parse<R: Read>(mut r: R) -> Result<Self> {
+        let mut magic = [0u8; 4];
+        r.read_exact(&mut magic)?;
+        if magic != *MAGIC {
+            return Err(Error::new(ErrorKind::InvalidData, "Invalid magic number"));
+        }
+
+        let version = r.read_u32::<LittleEndian>()?;
+        if version != VERSION {
+            return Err(Error::new(ErrorKind::InvalidData, "Unsupported version"));
+        }
 
         // TODO: Should we support multiple sections of the same type?
-        let (i, _num_sections) = le_u32(i)?;
+        let _num_sections = r.read_u32::<LittleEndian>()?;
 
-        let (i, header) = Header::parse(i)?;
-        let (i, constraints) = Constraints::parse(i, header.n_constraints as usize)?;
-        let (i, map) = WireMap::parse(i)?;
+        let header = Header::parse(&mut r)?;
+        let constraints = Constraints::parse(&mut r, header.n_constraints as usize)?;
+        let map = WireMap::parse(&mut r)?;
 
-        Ok((
-            i,
-            R1csFile {
-                header,
-                constraints,
-                map,
-            },
-        ))
+        Ok(R1csFile {
+            header,
+            constraints,
+            map,
+        })
     }
 }
 
@@ -77,30 +70,31 @@ pub struct Header<const FS: usize> {
 }
 
 impl<const FS: usize> Header<FS> {
-    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
-        let (i, _section) = SectionHeader::parse(i)?;
+    fn parse<R: Read>(mut r: R) -> Result<Self> {
+        let _section = SectionHeader::parse(&mut r)?;
 
-        let (i, _field_size) = tag((FS as u32).to_le_bytes())(i)?;
-        let (i, prime) = FieldElement::parse(i)?;
-        let (i, n_wires) = le_u32(i)?;
-        let (i, n_pub_out) = le_u32(i)?;
-        let (i, n_pub_in) = le_u32(i)?;
-        let (i, n_prvt_in) = le_u32(i)?;
-        let (i, n_labels) = le_u64(i)?;
-        let (i, n_constraints) = le_u32(i)?;
+        let field_size = r.read_u32::<LittleEndian>()?;
+        if field_size != FS as u32 {
+            return Err(Error::new(ErrorKind::InvalidData, "Wrong field size"));
+        }
 
-        Ok((
-            i,
-            Header {
-                prime,
-                n_wires,
-                n_pub_out,
-                n_pub_in,
-                n_prvt_in,
-                n_labels,
-                n_constraints,
-            },
-        ))
+        let prime = FieldElement::parse(&mut r)?;
+        let n_wires = r.read_u32::<LittleEndian>()?;
+        let n_pub_out = r.read_u32::<LittleEndian>()?;
+        let n_pub_in = r.read_u32::<LittleEndian>()?;
+        let n_prvt_in = r.read_u32::<LittleEndian>()?;
+        let n_labels = r.read_u64::<LittleEndian>()?;
+        let n_constraints = r.read_u32::<LittleEndian>()?;
+
+        Ok(Header {
+            prime,
+            n_wires,
+            n_pub_out,
+            n_pub_in,
+            n_prvt_in,
+            n_labels,
+            n_constraints,
+        })
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
@@ -126,19 +120,17 @@ impl<const FS: usize> Header<FS> {
 pub struct Constraints<const FS: usize>(pub Vec<Constraint<FS>>);
 
 impl<const FS: usize> Constraints<FS> {
-    fn parse(i: &[u8], n_constraints: usize) -> IResult<&[u8], Self> {
-        let (i, _section) = SectionHeader::parse(i)?;
+    fn parse<R: Read>(mut r: R, n_constraints: usize) -> Result<Self> {
+        let _section = SectionHeader::parse(&mut r)?;
         let mut constraints =
             Vec::with_capacity(std::mem::size_of::<Constraint<FS>>() * n_constraints);
 
-        let mut i = i;
         for _ in 0..n_constraints {
-            let (input, c) = Constraint::parse(i)?;
+            let c = Constraint::parse(&mut r)?;
             constraints.push(c);
-            i = input;
         }
 
-        Ok((i, Constraints(constraints)))
+        Ok(Constraints(constraints))
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
@@ -161,33 +153,27 @@ pub struct Constraint<const FS: usize> {
 }
 
 impl<const FS: usize> Constraint<FS> {
-    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
-        let (i, a) = Self::parse_combination(i)?;
-        let (i, b) = Self::parse_combination(i)?;
-        let (i, c) = Self::parse_combination(i)?;
+    fn parse<R: Read>(mut r: R) -> Result<Self> {
+        let a = Self::parse_combination(&mut r)?;
+        let b = Self::parse_combination(&mut r)?;
+        let c = Self::parse_combination(&mut r)?;
 
-        Ok((
-            i,
-            Constraint {
-                combinations: [a, b, c],
-            },
-        ))
+        Ok(Constraint {
+            combinations: [a, b, c],
+        })
     }
 
-    fn parse_combination(i: &[u8]) -> IResult<&[u8], Vec<(FieldElement<FS>, u32)>> {
-        let (i, n) = le_u32(i)?;
+    fn parse_combination<R: Read>(mut r: R) -> Result<Vec<(FieldElement<FS>, u32)>> {
+        let n = r.read_u32::<LittleEndian>()?;
         let mut factors = Vec::new();
 
-        let mut i = i;
         for _ in 0..n {
-            let (input, index) = le_u32(i)?;
-            let (input, factor) = FieldElement::parse(input)?;
+            let index = r.read_u32::<LittleEndian>()?;
+            let factor = FieldElement::parse(&mut r)?;
             factors.push((factor, index));
-
-            i = input;
         }
 
-        Ok((i, factors))
+        Ok(factors)
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
@@ -217,12 +203,16 @@ impl<const FS: usize> Constraint<FS> {
 pub struct WireMap(pub Vec<u64>);
 
 impl WireMap {
-    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
-        let (i, section) = SectionHeader::parse(i)?;
+    fn parse<R: Read>(mut r: R) -> Result<Self> {
+        let section = SectionHeader::parse(&mut r)?;
         let num_labels = section.size / 8;
-        let (i, label_ids) = count(le_u64, num_labels as usize)(i)?;
+        let mut label_ids = Vec::with_capacity(num_labels as usize);
 
-        Ok((i, WireMap(label_ids)))
+        for _ in 0..num_labels {
+            label_ids.push(r.read_u64::<LittleEndian>()?);
+        }
+
+        Ok(WireMap(label_ids))
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
@@ -245,17 +235,17 @@ struct SectionHeader {
 }
 
 impl SectionHeader {
-    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
-        let (i, ty) = SectionType::parse(i)?;
-        let (i, size) = le_u64(i)?;
+    fn parse<R: Read>(mut r: R) -> Result<Self> {
+        let ty = SectionType::parse(&mut r)?;
+        let size = r.read_u64::<LittleEndian>()?;
 
         // Ignore invalid sections
         if ty == SectionType::Unknown {
-            let (i, _) = take(size)(i)?;
-            return Self::parse(i); // TODO: Get rid of recursion
+            std::io::copy(&mut r.by_ref().take(size), &mut std::io::sink())?;
+            return Self::parse(r); // TODO: Get rid of recursion
         }
 
-        Ok((i, SectionHeader { ty, size }))
+        Ok(SectionHeader { ty, size })
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
@@ -274,8 +264,8 @@ enum SectionType {
 }
 
 impl SectionType {
-    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
-        let (i, num) = le_u32(i)?;
+    fn parse<R: Read>(mut r: R) -> Result<Self> {
+        let num = r.read_u32::<LittleEndian>()?;
 
         let ty = match num {
             1 => SectionType::Header,
@@ -284,7 +274,7 @@ impl SectionType {
             _ => SectionType::Unknown,
         };
 
-        Ok((i, ty))
+        Ok(ty)
     }
 }
 
@@ -296,11 +286,11 @@ impl<const FS: usize> FieldElement<FS> {
         &self.0[..]
     }
 
-    fn parse(i: &[u8]) -> IResult<&[u8], Self> {
+    fn parse<R: Read>(mut r: R) -> Result<Self> {
         let mut buf = [0; FS];
-        let (i, _) = fill(u8, &mut buf)(i)?;
+        r.read_exact(&mut buf)?;
 
-        Ok((i, FieldElement(buf)))
+        Ok(FieldElement(buf))
     }
 
     fn serialize(&self, buf: &mut Vec<u8>) {
@@ -330,7 +320,7 @@ mod tests {
     #[test]
     fn test_parse() {
         let data = std::fs::read("tests/simple_circuit.r1cs").unwrap();
-        let file = R1csFile::<32>::parse_bytes(&data).unwrap();
+        let file = R1csFile::<32>::parse(data.as_slice()).unwrap();
 
         // Thanks to https://github.com/poma/zkutil/blob/5d789ab3757dcd79eff244ca4998d7ab91683b40/src/r1cs_reader.rs#L188
         assert_eq!(
@@ -371,7 +361,7 @@ mod tests {
     #[test]
     fn test_serialize() {
         let data = std::fs::read("tests/test_circuit.r1cs").unwrap();
-        let parsed_file = R1csFile::<32>::parse_bytes(&data).unwrap();
+        let parsed_file = R1csFile::<32>::parse(data.as_slice()).unwrap();
         let serialized_file = parsed_file.serialize();
 
         // std::fs::write("simple_circuit_new.r1cs", &serialized_file).unwrap();
