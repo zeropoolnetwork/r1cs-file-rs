@@ -151,9 +151,9 @@ impl<const FS: usize> Constraints<FS> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Constraint<const FS: usize>(
-    Vec<(FieldElement<FS>, u32)>,
-    Vec<(FieldElement<FS>, u32)>,
-    Vec<(FieldElement<FS>, u32)>,
+    pub Vec<(FieldElement<FS>, u32)>,
+    pub Vec<(FieldElement<FS>, u32)>,
+    pub Vec<(FieldElement<FS>, u32)>,
 );
 
 impl<const FS: usize> Constraint<FS> {
