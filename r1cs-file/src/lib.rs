@@ -116,7 +116,7 @@ impl<const FS: usize> Header<FS> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Constraints<const FS: usize>(pub Vec<Constraint<FS>>);
 
 impl<const FS: usize> Constraints<FS> {
@@ -149,7 +149,7 @@ impl<const FS: usize> Constraints<FS> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Constraint<const FS: usize>(
     pub Vec<(FieldElement<FS>, u32)>,
     pub Vec<(FieldElement<FS>, u32)>,
@@ -206,7 +206,7 @@ impl<const FS: usize> Constraint<FS> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct WireMap(pub Vec<u64>);
 
 impl WireMap {
