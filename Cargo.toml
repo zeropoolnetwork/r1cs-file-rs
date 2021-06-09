@@ -1,4 +1,5 @@
 [workspace]
 members = [
     "r1cs-file",
+    "wtns-file",
 ]
