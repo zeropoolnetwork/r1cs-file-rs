@@ -8,13 +8,13 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 const MAGIC: &[u8; 4] = b"wtns";
 
 #[derive(Debug)]
-pub struct WTNSFile<const FS: usize> {
+pub struct WtnsFile<const FS: usize> {
     pub version: u32,
     pub header: Header<FS>,
     pub witness: Witness<FS>,
 }
 
-impl<const FS: usize> WTNSFile<FS> {
+impl<const FS: usize> WtnsFile<FS> {
     pub fn read<R: Read>(mut r: R) -> Result<Self> {
         let mut magic = [0u8; 4];
         r.read_exact(&mut magic)?;
@@ -39,7 +39,7 @@ impl<const FS: usize> WTNSFile<FS> {
         let header = Header::read(&mut r)?;
         let witness = Witness::read(&mut r, &header)?;
 
-        Ok(WTNSFile {
+        Ok(WtnsFile {
             version,
             header,
             witness,
