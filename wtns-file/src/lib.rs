@@ -15,6 +15,18 @@ pub struct WtnsFile<const FS: usize> {
 }
 
 impl<const FS: usize> WtnsFile<FS> {
+    pub fn from_vec(witness: Vec<FieldElement<FS>>, prime: FieldElement<FS>) -> Self {
+        WtnsFile {
+            version: 1,
+            header: Header {
+                field_size: FS as u32,
+                prime,
+                witness_len: witness.len() as u32,
+            },
+            witness: Witness(witness),
+        }
+    }
+
     pub fn read<R: Read>(mut r: R) -> Result<Self> {
         let mut magic = [0u8; 4];
         r.read_exact(&mut magic)?;
