@@ -7,7 +7,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 const MAGIC: &[u8; 4] = b"wtns";
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct WtnsFile<const FS: usize> {
     pub version: u32,
     pub header: Header<FS>,
@@ -61,6 +61,7 @@ impl<const FS: usize> WtnsFile<FS> {
     pub fn write<W: Write>(&self, mut w: W) -> Result<()> {
         w.write_all(MAGIC)?;
         w.write_u32::<LittleEndian>(self.version)?;
+        w.write_u32::<LittleEndian>(2)?;
         self.header.write(&mut w)?;
         self.witness.write(&mut w)?;
 
@@ -68,7 +69,7 @@ impl<const FS: usize> WtnsFile<FS> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Header<const FS: usize> {
     pub field_size: u32,
     pub prime: FieldElement<FS>,
@@ -123,14 +124,14 @@ impl<const FS: usize> Header<FS> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Witness<const FS: usize>(pub Vec<FieldElement<FS>>);
 
 impl<const FS: usize> Witness<FS> {
     pub fn read<R: Read>(mut r: R, header: &Header<FS>) -> Result<Self> {
         let sec_type = SectionType::read(&mut r)?;
         if sec_type != SectionType::Witness {
-            return Err(Error::new(ErrorKind::InvalidData, "Invalid section type"));
+            return Err(Error::new(ErrorKind::InvalidData, "Invalid section type: expected witness"));
         }
         let sec_size = r.read_u64::<LittleEndian>()?;
 
@@ -222,5 +223,28 @@ impl<const FS: usize> std::ops::Deref for FieldElement<FS> {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    const FS: usize = 32;
+
+    fn fe() -> FieldElement<FS> {
+        FieldElement::from([1,0,1,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1])
+    }
+
+    #[test]
+    fn test() {
+        let file = WtnsFile::<FS>::from_vec(vec![fe(), fe(), fe()], fe());
+        let mut data = Vec::new();
+        file.write(&mut data).unwrap();
+
+        let new_file = WtnsFile::read(Cursor::new(data)).unwrap();
+
+        assert_eq!(file, new_file);
     }
 }
