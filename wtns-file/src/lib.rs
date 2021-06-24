@@ -112,6 +112,9 @@ impl<const FS: usize> Header<FS> {
     pub fn write<W: Write>(&self, mut w: W) -> Result<()> {
         SectionType::Header.write(&mut w)?;
 
+        let sec_size = 4 + FS as u64 + 4;
+        w.write_u64::<LittleEndian>(sec_size)?;
+
         w.write_u32::<LittleEndian>(FS as u32)?;
         self.prime.write(&mut w)?;
         w.write_u32::<LittleEndian>(self.witness_len)?;
