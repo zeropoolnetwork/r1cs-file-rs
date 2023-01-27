@@ -30,17 +30,70 @@ impl<const FS: usize> R1csFile<FS> {
         }
 
         // TODO: Should we support multiple sections of the same type?
-        let _num_sections = r.read_u32::<LittleEndian>()?;
+        //
+        // For now assume there is at most one section of each kind.
+        let num_sections = r.read_u32::<LittleEndian>()?;
 
-        let header = Header::read(&mut r)?;
-        let constraints = Constraints::read(&mut r, header.n_constraints as usize)?;
-        let map = WireMap::read(&mut r)?;
+        let mut header = None;
+        let mut constraints = None;
+        let mut map = None;
 
-        Ok(R1csFile {
-            header,
-            constraints,
-            map,
-        })
+        for _ in 0..num_sections {
+            let section_header = SectionHeader::read(&mut r)?;
+
+            match section_header.ty {
+                SectionType::Header => {
+                    if let None = header {
+                        header = Some(Header::read(&mut r)?);
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "Duplicated header section found",
+                        ));
+                    }
+                }
+                SectionType::Constraint => {
+                    if let None = constraints {
+                        constraints = Some(Constraints::read(&mut r, &section_header)?);
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "Duplicated constraints section found",
+                        ));
+                    }
+                }
+                SectionType::Wire2LabelIdMap => {
+                    if let None = map {
+                        map = Some(WireMap::read(&mut r, &section_header)?);
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "Duplicated wire map section found",
+                        ));
+                    }
+                }
+                SectionType::Unknown => {
+                    return Err(Error::new(ErrorKind::InvalidData, "Unknown section"))
+                }
+            }
+        }
+
+        match (header, constraints, map) {
+            (Some(header), Some(constraints), Some(map)) => Ok(R1csFile {
+                header,
+                constraints,
+                map,
+            }),
+            (None, _, _) => Err(Error::new(ErrorKind::InvalidData, "Missing header section")),
+            (_, None, _) => Err(Error::new(
+                ErrorKind::InvalidData,
+                "Missing constraints section",
+            )),
+            (_, _, None) => Err(Error::new(
+                ErrorKind::InvalidData,
+                "Missing wire map section",
+            )),
+        }
     }
 
     pub fn write<W: Write>(&self, mut w: W) -> Result<()> {
@@ -69,8 +122,6 @@ pub struct Header<const FS: usize> {
 
 impl<const FS: usize> Header<FS> {
     fn read<R: Read>(mut r: R) -> Result<Self> {
-        let _section = SectionHeader::read(&mut r)?;
-
         let field_size = r.read_u32::<LittleEndian>()?;
         if field_size != FS as u32 {
             return Err(Error::new(ErrorKind::InvalidData, "Wrong field size"));
@@ -120,13 +171,12 @@ impl<const FS: usize> Header<FS> {
 pub struct Constraints<const FS: usize>(pub Vec<Constraint<FS>>);
 
 impl<const FS: usize> Constraints<FS> {
-    fn read<R: Read>(mut r: R, n_constraints: usize) -> Result<Self> {
-        let _section = SectionHeader::read(&mut r)?;
-        let mut constraints =
-            Vec::with_capacity(std::mem::size_of::<Constraint<FS>>() * n_constraints);
+    fn read<R: Read>(r: R, section_header: &SectionHeader) -> Result<Self> {
+        let mut section_data = r.take(section_header.size);
 
-        for _ in 0..n_constraints {
-            let c = Constraint::read(&mut r)?;
+        let mut constraints = Vec::new();
+        while section_data.limit() > 0 {
+            let c = Constraint::read(&mut section_data)?;
             constraints.push(c);
         }
 
@@ -210,9 +260,8 @@ impl<const FS: usize> Constraint<FS> {
 pub struct WireMap(pub Vec<u64>);
 
 impl WireMap {
-    fn read<R: Read>(mut r: R) -> Result<Self> {
-        let section = SectionHeader::read(&mut r)?;
-        let num_labels = section.size / 8;
+    fn read<R: Read>(mut r: R, section_header: &SectionHeader) -> Result<Self> {
+        let num_labels = section_header.size / 8;
         let mut label_ids = Vec::with_capacity(num_labels as usize);
 
         for _ in 0..num_labels {
@@ -247,12 +296,6 @@ impl SectionHeader {
     fn read<R: Read>(mut r: R) -> Result<Self> {
         let ty = SectionType::read(&mut r)?;
         let size = r.read_u64::<LittleEndian>()?;
-
-        // Ignore invalid sections
-        if ty == SectionType::Unknown {
-            std::io::copy(&mut r.by_ref().take(size), &mut std::io::sink())?;
-            return Self::read(r); // TODO: Get rid of recursion
-        }
 
         Ok(SectionHeader { ty, size })
     }
